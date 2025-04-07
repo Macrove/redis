@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <sys/poll.h>
@@ -19,6 +20,21 @@
 #define WANT_WRITE_FLAG POLL_OUT
 #define WANT_CLOSE_FLAG POLL_ERR
 
+static void die(const char* message){
+    perror(message);
+    std::abort();
+}
+void msg_errno(const char* msg){
+    fprintf(stderr, "[errno:%d] %s\n",errno, msg);
+}
+void msg(const char* msg, ...){
+    va_list args;
+    va_start(args, msg);
+    vfprintf(stderr, msg, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+}
+
 struct Conn{
     int fd;
     short flags;
@@ -28,10 +44,6 @@ struct Conn{
 
 };
 
-static void die(const char* message){
-    perror(message);
-    std::abort();
-}
 
 static void fd_set_nb(int fd){
     errno = 0;
@@ -42,7 +54,7 @@ static void fd_set_nb(int fd){
     flags |= O_NONBLOCK;
 
     errno = 0;
-    fcntl(fd, F_SETFL, 0);
+    fcntl(fd, F_SETFL, flags);
     if (errno) {
         die("fcntl:F_SETFL failed");
     }
@@ -54,17 +66,22 @@ struct Conn* handle_accept(int fd){
     client_addr.sin_family = AF_INET;
     socklen_t client_addr_len = sizeof(client_addr);
 
+    errno = 0;
     int connfd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_len);
-    if (connfd < 0) {
-        die("Accept Failed");
+    if (connfd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        msg("listening queue empty");
+        return NULL;
     }
-    uint32_t ip = client_addr.sin_addr.s_addr;
-    fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip & 255, ip>>8 & 255, ip>> 16 & 255, ip >> 24 & 255, ntohl(client_addr.sin_port));
+    if (connfd < 0) {
+        msg("Accept Failed");
+        return NULL;
+    }
+    uint32_t ip = ntohl(client_addr.sin_addr.s_addr);
+    fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip>>24 & 255, ip>>16 & 255, ip>>8 & 255, ip & 255, ntohl(client_addr.sin_port));
 
     fd_set_nb(connfd);
 
     Conn *conn = new Conn();
-    //conn->fd = ?;
     conn->fd = connfd;
     conn->flags |= WANT_READ_FLAG;
 
@@ -72,34 +89,64 @@ struct Conn* handle_accept(int fd){
 
 }
 
-void msg_errno(const char* msg){
-    fprintf(stderr, "[errno:%d] %s\n",errno, msg);
-}
-void msg(const char* msg){
-    fprintf(stderr, "%s", msg);
-}
-void buf_append(std::vector<uint8_t> &buf, uint8_t *data, size_t len){
+void buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len){
     buf.insert(buf.end(), data, data+len);
+}
+void consume_buf(std::vector<uint8_t>&buf, uint32_t len){
+    buf.erase(buf.begin(), buf.begin()+len);
 }
 bool try_one_request(Conn* conn){
     if (conn->incoming.size() < 4) {
+        msg("Incoming size < 4. read required");
         return false;
     }
     uint32_t len = 0;
     std::memcpy(&len, conn->incoming.data(), 4);
+    printf("expected msg len:%d\n", len);
     if(len > K_MAX_BUF){
-        msg("Too big msg");
+        msg("Too big msg: len:%d, K_MAX_BUF:%d", len, K_MAX_BUF);
         conn->flags |= WANT_CLOSE_FLAG;
         return false;
     }
+    if(conn->incoming.size() < len+4){
+        msg("invalid incoming size. len:%d, conn->incoming.size():%d", len, conn->incoming.size());
+        return false; // more reading needed. but i set read flag to 0 right? how does that work?
+    }
+    const uint8_t *request = &conn->incoming[4]; // assuming string to be null terminated? well we are reading only len, so it's fine ig
+    // processing request
+    printf("Request from client: size:%d: %.*s\n", len, len > 50 ? 50: len, request);
+
+    // echoing back req in response
+    buf_append(conn->outgoing, (const uint8_t*)&len, 4);
+    buf_append(conn->outgoing, request, len);
+
+    consume_buf(conn->incoming, len+4);
+    return true;
 }
 
-int handle_write(Conn* conn){
-    return 0;
+void handle_write(Conn* conn){
+    assert(conn->outgoing.size() > 0);
+    ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size()*sizeof(uint8_t));
+    if (rv < 0 && errno == EAGAIN) {
+        return; // not an error
+    }
+    if (rv < 0) {
+        // error in writing
+        msg_errno("Write error");
+        conn->flags |= WANT_CLOSE_FLAG;
+        return;
+    }
+    consume_buf(conn->outgoing, (size_t)rv);
+    if(conn->outgoing.size() == 0){
+        conn->flags |= WANT_READ_FLAG;
+        conn->flags &= ~WANT_WRITE_FLAG;
+    }
 }
 
 void handle_read(Conn* conn){
+    std::cout << "Handling read" << std::endl;
     uint8_t buf[64*1024];
+    errno = 0;
     size_t rv = read(conn->fd, buf, sizeof(buf));
     if(rv <0 && errno == EAGAIN){
         return; // not an error
@@ -121,14 +168,17 @@ void handle_read(Conn* conn){
     }
 
     // got some new data, put it in incoming 
-    buf_append(conn->incoming, buf, sizeof(buf));
+    buf_append(conn->incoming, buf, (size_t)rv);
 
     while(try_one_request(conn)){};
 
+    // why not conn->income.size>0 => want read more, since there is an incomplete request in the queue
+    // one issue would be the too big msg.
+    // is it like there can't be less than 4byte of header? ig so
     if (conn->outgoing.size()>0) {
         conn->flags &= ~WANT_READ_FLAG;
         conn->flags |= WANT_WRITE_FLAG;
-        handle_write(conn);
+        return handle_write(conn);
     }
 }
 
@@ -139,7 +189,7 @@ int main(){
         die("Socket failed");
     }
     int val = 1;
-    if(setsockopt(AF_INET, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val))){
+    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val))){
         die("setsockopt Failed");
     };
 
@@ -147,8 +197,8 @@ int main(){
     struct sockaddr_in addr = {};
     socklen_t addrlen = sizeof(addr);
     addr.sin_family = AF_INET;
-    addr.sin_port = PORT;
-    addr.sin_addr.s_addr = ntohl(0); // wildcard = 0, same as INADDR_ANY
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = htonl(0); // wildcard = 0, same as INADDR_ANY
 
     int rv = bind(fd, (const struct sockaddr *)&addr, addrlen);
     if(rv){
@@ -157,6 +207,8 @@ int main(){
 
     // set the listen fd to nonblocking mode
     fd_set_nb(fd);
+
+    std::cout << "fd_set_nb success" << std::endl;
 
     // listen
     rv = listen(fd, SOMAXCONN); // SOMAXCONN - socket outstanding max conn
@@ -168,28 +220,36 @@ int main(){
     std::vector<struct pollfd> poll_args;
 
 
-    // even loop
+    // event loop
     while (true) {
+        std::cout << "Event loop" << std::endl;
         poll_args.clear();
-        poll_args.push_back({0, POLL_IN, 0});
+        poll_args.push_back({fd, POLL_IN, 0});
 
         for (Conn* &conn : fd2conn) {
+            if(!conn){
+                continue;
+            }
             struct pollfd pfd = {conn->fd, 0, 0};
             // events given connection is interested in
-            pfd.events |= POLLERR | conn->flags;
+            pfd.events |= conn->flags;
             poll_args.push_back(pfd);
         }
         // blocking call waiting for readiness
+        std::cout << "poll waiting: " << rv << std::endl;
         int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
-        if (rv < 0 && errno == EINTR) { // interrupt sys call
+        std::cout << "poll success: " << rv << std::endl;
+        if (rv < 0 && (errno == EINTR || errno == EAGAIN)) { // interrupt sys call
+            msg("Inturrupt poll call");
             continue;
         }
         if(rv < 0){
             die("poll failed");
         }
         // handle listening socket
-        if(poll_args[0].revents){
-            if(Conn *conn = handle_accept(poll_args[0].fd)){
+        if(poll_args[0].revents & POLLIN){
+            Conn *conn = handle_accept(fd);
+            if(conn){
                 if (ssize_t(conn->fd) >= fd2conn.size()) {
                     fd2conn.resize(conn->fd + 1);
                 }
@@ -218,17 +278,11 @@ int main(){
                 fd2conn[conn->fd] = NULL;
                 delete conn;
             }
-            int rv = close(fd);
-            if(rv){
-                die("Close failed");
-            }
         }
     }
-
-
-    // accept in event loop
-
-        
-
+    rv = close(fd);
+    if(rv){
+        die("Close failed");
+    }
     return 0;
 }
