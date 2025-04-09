@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <assert.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,9 +18,9 @@
 #define PORT 8080
 #define K_MAX_BUF 32<<20 // what should be the ideal value?
 
-#define WANT_READ_FLAG POLL_IN
-#define WANT_WRITE_FLAG POLL_OUT
-#define WANT_CLOSE_FLAG POLL_ERR
+#define WANT_READ_FLAG POLLIN
+#define WANT_WRITE_FLAG POLLOUT
+#define WANT_CLOSE_FLAG POLLERR
 
 static void die(const char* message){
     perror(message);
@@ -63,15 +65,14 @@ static void fd_set_nb(int fd){
 
 struct Conn* handle_accept(int fd){
     struct sockaddr_in client_addr;
-    client_addr.sin_family = AF_INET;
     socklen_t client_addr_len = sizeof(client_addr);
 
     errno = 0;
     int connfd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_len);
-    if (connfd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        msg("listening queue empty");
-        return NULL;
-    }
+    //if (connfd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        //msg("listening queue empty");
+        //return NULL;
+    //}
     if (connfd < 0) {
         msg("Accept Failed");
         return NULL;
@@ -97,7 +98,7 @@ void consume_buf(std::vector<uint8_t>&buf, uint32_t len){
 }
 bool try_one_request(Conn* conn){
     if (conn->incoming.size() < 4) {
-        msg("Incoming size < 4. read required");
+        msg("Incoming size < 4. read required:%d", conn->incoming.size());
         return false;
     }
     uint32_t len = 0;
@@ -117,16 +118,18 @@ bool try_one_request(Conn* conn){
     printf("Request from client: size:%d: %.*s\n", len, len > 50 ? 50: len, request);
 
     // echoing back req in response
+    msg("conn->outgoing before buf_append:%d", conn->outgoing.size());
     buf_append(conn->outgoing, (const uint8_t*)&len, 4);
     buf_append(conn->outgoing, request, len);
+    msg("conn->outgoing post buf_append:%d", conn->outgoing.size());
 
     consume_buf(conn->incoming, len+4);
     return true;
 }
-
 void handle_write(Conn* conn){
+    msg("Handling write");
     assert(conn->outgoing.size() > 0);
-    ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size()*sizeof(uint8_t));
+    ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size());
     if (rv < 0 && errno == EAGAIN) {
         return; // not an error
     }
@@ -136,7 +139,9 @@ void handle_write(Conn* conn){
         conn->flags |= WANT_CLOSE_FLAG;
         return;
     }
+    msg("Consuming write buf:size:%d, rv = %d", conn->outgoing.size(), rv);
     consume_buf(conn->outgoing, (size_t)rv);
+    msg("Consumed write buf:size:%d", conn->outgoing.size());
     if(conn->outgoing.size() == 0){
         conn->flags |= WANT_READ_FLAG;
         conn->flags &= ~WANT_WRITE_FLAG;
@@ -144,21 +149,22 @@ void handle_write(Conn* conn){
 }
 
 void handle_read(Conn* conn){
-    std::cout << "Handling read" << std::endl;
+    msg("Handling read");
     uint8_t buf[64*1024];
     errno = 0;
-    size_t rv = read(conn->fd, buf, sizeof(buf));
+    ssize_t rv = read(conn->fd, buf, sizeof(buf));
     if(rv <0 && errno == EAGAIN){
         return; // not an error
     }
     if(rv < 0){
         msg_errno("Read failed");
+        conn->flags &= ~WANT_READ_FLAG;
         conn->flags |= WANT_CLOSE_FLAG;
         return;
     }
     if(rv == 0){
         if (conn->incoming.size()==0) {
-            msg("Client closed");
+            msg("closing client");
         }
         else{
             msg_errno("Unexpected EOF");
@@ -166,6 +172,7 @@ void handle_read(Conn* conn){
         conn->flags |= WANT_CLOSE_FLAG;
         return;
     }
+    msg("read bytes:%d", rv);
 
     // got some new data, put it in incoming 
     buf_append(conn->incoming, buf, (size_t)rv);
@@ -176,9 +183,9 @@ void handle_read(Conn* conn){
     // one issue would be the too big msg.
     // is it like there can't be less than 4byte of header? ig so
     if (conn->outgoing.size()>0) {
-        conn->flags &= ~WANT_READ_FLAG;
+        //conn->flags &= ~WANT_READ_FLAG;
         conn->flags |= WANT_WRITE_FLAG;
-        return handle_write(conn);
+        // return handle_write(conn);
     }
 }
 
@@ -221,10 +228,13 @@ int main(){
 
 
     // event loop
+    bool write_flag_set = false;
     while (true) {
-        std::cout << "Event loop" << std::endl;
+        rv = 0;
+        msg("Event loop");
+        msg("write_flag_set:%d", write_flag_set);
         poll_args.clear();
-        poll_args.push_back({fd, POLL_IN, 0});
+        poll_args.push_back({fd, POLLIN, 0});
 
         for (Conn* &conn : fd2conn) {
             if(!conn){
@@ -233,12 +243,16 @@ int main(){
             struct pollfd pfd = {conn->fd, 0, 0};
             // events given connection is interested in
             pfd.events |= conn->flags;
+            //msg("pfd.events:%d", pfd.events);
+            //msg("pfd.revents:%d", pfd.revents);
             poll_args.push_back(pfd);
         }
+        msg("size of fd2conn:%d", fd2conn.size());
         // blocking call waiting for readiness
-        std::cout << "poll waiting: " << rv << std::endl;
-        int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
-        std::cout << "poll success: " << rv << std::endl;
+        msg("poll waiting:%d", rv);
+        msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", 1, poll_args[1].events&WANT_READ_FLAG,poll_args[1].events&WANT_WRITE_FLAG,poll_args[1].events&WANT_CLOSE_FLAG ,poll_args[1].revents&WANT_READ_FLAG,poll_args[1].revents&WANT_WRITE_FLAG,poll_args[1].revents&WANT_CLOSE_FLAG);
+        rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
+        msg("poll success:%d", rv);
         if (rv < 0 && (errno == EINTR || errno == EAGAIN)) { // interrupt sys call
             msg("Inturrupt poll call");
             continue;
@@ -247,10 +261,10 @@ int main(){
             die("poll failed");
         }
         // handle listening socket
-        if(poll_args[0].revents & POLLIN){
+        if(poll_args[0].revents){
             Conn *conn = handle_accept(fd);
             if(conn){
-                if (ssize_t(conn->fd) >= fd2conn.size()) {
+                if (size_t(conn->fd) >= fd2conn.size()) {
                     fd2conn.resize(conn->fd + 1);
                 }
                 assert(!fd2conn[conn->fd]);
@@ -261,19 +275,23 @@ int main(){
         // handle other connections
         for (int i=1; i<poll_args.size(); i++) {
             uint32_t ready = poll_args[i].revents;
+            if (ready & WANT_WRITE_FLAG) {
+                write_flag_set = true; 
+            }
+            msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", i, poll_args[i].events&WANT_READ_FLAG,poll_args[i].events&WANT_WRITE_FLAG,poll_args[i].events&WANT_CLOSE_FLAG ,ready&WANT_READ_FLAG,ready&WANT_WRITE_FLAG,ready&WANT_CLOSE_FLAG);
             if(!ready){
                 continue;
             }
             Conn *conn = fd2conn[poll_args[i].fd];
-            if (conn->flags & WANT_READ_FLAG) {
-                assert(conn->flags & POLLIN);
+            if (ready & POLLIN) {
+                assert(conn->flags & WANT_READ_FLAG);
                 handle_read(conn);
             }
-            if(conn->flags & WANT_WRITE_FLAG){
-                assert(conn->flags & POLLOUT);
+            if(ready & POLLOUT){
+                assert(conn->flags & WANT_WRITE_FLAG);
                 handle_write(conn);
             }
-            if(conn->flags & WANT_CLOSE_FLAG || (ready & POLLERR)){
+            if((ready & POLLERR) || (conn->flags & WANT_CLOSE_FLAG)){
                 close(conn->fd);
                 fd2conn[conn->fd] = NULL;
                 delete conn;
