@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <sys/poll.h>
@@ -15,12 +16,17 @@
 #include <poll.h>
 #include <unistd.h>
 
+
 #define PORT 8080
-#define K_MAX_BUF 32<<20 // what should be the ideal value?
+#define K_MAX_BUF 32<<20
+#define K_MAX_ARGS 200*1000
 
 #define WANT_READ_FLAG POLLIN
 #define WANT_WRITE_FLAG POLLOUT
 #define WANT_CLOSE_FLAG POLLERR
+
+// placeholder map<string, string> g_data
+std::map<std::string, std::string> g_data;
 
 static void die(const char* message){
     perror(message);
@@ -93,39 +99,170 @@ struct Conn* handle_accept(int fd){
 void buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len){
     buf.insert(buf.end(), data, data+len);
 }
+// optimization possibility - have a buffer struct, so that you just have to move the pointer instead of erase from start
 void consume_buf(std::vector<uint8_t>&buf, uint32_t len){
     buf.erase(buf.begin(), buf.begin()+len);
 }
-bool try_one_request(Conn* conn){
-    if (conn->incoming.size() < 4) {
-        msg("Incoming size < 4. read required:%d", conn->incoming.size());
+static bool read_u32(const uint8_t *&cur, const uint8_t *end, uint32_t &out){
+    // check if 4 bytes available
+    // read 4 bytes
+    if(cur + 4 > end){
+        msg("read_u32:insufficient data");
         return false;
     }
-    uint32_t len = 0;
-    std::memcpy(&len, conn->incoming.data(), 4);
-    printf("expected msg len:%d\n", len);
-    if(len > K_MAX_BUF){
-        msg("Too big msg: len:%d, K_MAX_BUF:%d", len, K_MAX_BUF);
+    memcpy(&out, cur, 4);
+    cur += 4;
+    return true;
+}
+static bool read_str(const uint8_t *&curr, const uint8_t *end, size_t n, std::string &out){
+    if(curr + n > end){
+        msg("read_str: insufficient bytes");
+        return false;
+    }
+    out.assign(curr, curr + n);
+    curr += n;
+    return true;
+}
+enum ResponseStatus {
+    RES_OK = 0,
+    RES_NX = 1,
+    RES_ERR = 2,
+};
+
+struct Response{
+    enum ResponseStatus status = RES_OK;
+    std::vector<uint8_t> data;
+};
+static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<std::string> &out){
+    // if can't read uint32, return -1
+    // if len of req > k_max_buf - return -1
+    // read len of req times from data and store in out
+    // arrangement of request in data - nstr, len1 str1, len2, str2
+    // lastly check if after consuming data, there's anything still left, data != end => return -1 for trailing garbage
+    // return 0
+    // figured - it's always - read 4 bytes, and find how much more to read
+    // so structure of message that comes = [len of total request ahead of me], [nstr = how many strings. not how many reqs], [lenstr], [str = get set del or key or new val], [lenstr],[str]
+    uint32_t nstr = 0;
+    if(!read_u32(data, end, nstr)){
+        msg("parse_req:can't read nstr");
+        return -1;
+    }
+    msg("nstr:%d", nstr);
+    if(nstr > K_MAX_ARGS){
+        msg("parse_req:Too big request");
+        return -1;
+    }
+    while (out.size() < nstr) {
+        uint32_t len=0;
+        if(!read_u32(data, end, len)){
+            msg("parse_req:couldn't read len of str");
+            return -1;
+        }
+        msg("len:%d",len);
+        out.push_back("");
+        if(!read_str(data, end, (size_t)len, out.back())){
+            msg("parse_req:failed to read_str");
+        }
+        msg("out.back():%s", out.back().c_str());
+    }
+    return 0;
+}
+
+static void do_request(std::vector<std::string> &cmd, Response &out){
+    // check cmd.size and cmd[0]==get,set,del. for get and del - size if 2, for set it's 3
+    // in get req, if g_data.find(cmd[1])==g_data.end() return RES_NX as out.status
+    // else out.data should be it->second;
+    // in set - replace
+    // in del - erase
+    // if anything else - out.status = RES_ERR // for unrecognised command
+    if (cmd.size() == 2 && cmd[0] == "get") {
+        auto it = g_data.find(cmd[1]);
+        if (it == g_data.end()) {
+            msg("do_request:Get Key:%s, Not Found", cmd[1].c_str());
+            out.status = RES_NX; 
+        } 
+        else{
+            const std::string &val = it->second;
+            uint32_t res_len = val.size();
+            buf_append(out.data, (uint8_t*)&res_len, 4);
+            buf_append(out.data, (uint8_t*)val.data(), (size_t)res_len);
+        }
+    }
+    else if (cmd.size() == 2 && cmd[0] == "del") {
+        auto it = g_data.find(cmd[1]);
+        if (it==g_data.end()) {
+            msg("do_request: %s not present. Skipping delete", cmd[1].c_str());
+            out.status = RES_NX;
+        }
+        else
+            g_data.erase(it);
+    }
+    else if(cmd.size() == 3 && cmd[0] == "set"){
+        auto it = g_data.find(cmd[1]);
+        if(it==g_data.end()){
+            g_data[cmd[1]] = cmd[2];
+        }
+        else{
+            std::swap(it->second, cmd[2]);
+        }
+    }
+    else{
+        msg("do_request:Invalid request");
+        out.status = RES_ERR;
+    }
+}
+static void make_response(const Response &resp, std::vector<uint8_t> &out){
+    // fill out buffer with response
+    // format - len of response +4, resp_statuc, resp_data
+    uint32_t len = 4+resp.data.size();
+    buf_append(out, (uint8_t *)&len, 4);
+    buf_append(out, (uint8_t*)&resp.status, 4);
+    buf_append(out, resp.data.data(), resp.data.size());
+    for(int i=0;i<out.size();i++){
+        std::cout << (int)out[i] << " ";
+    }
+    std::cout << '\n';
+}
+// optimization - response data goes directly to conn->outgoing
+// resp - status and data
+bool try_one_request(Conn* conn){
+    if (conn->incoming.size()==0) {
+        msg("try_one_request:conn->incoming.size()==0");
+        return false; 
+    }
+    std::cout << conn->incoming.size() << '\n';
+    uint32_t req_len = 0;
+    const uint8_t* data = conn->incoming.data();
+    const uint8_t* end  = data + conn->incoming.size();
+    if(!read_u32(data, end, req_len)){
+        msg("try_one_request:couldn't read req_len");
+        return false;
+    }
+    if(req_len > K_MAX_BUF){
+        msg("try_one_request: too big message. closing connection");
         conn->flags |= WANT_CLOSE_FLAG;
         return false;
     }
-    if(conn->incoming.size() < len+4){
-        msg("invalid incoming size. len:%d, conn->incoming.size():%d", len, conn->incoming.size());
-        return false; // more reading needed. but i set read flag to 0 right? how does that work?
+    if(conn->incoming.size() < req_len+4){
+        msg("try_one_request:read required. full req_len data not present");
+        return false;
     }
-    const uint8_t *request = &conn->incoming[4]; // assuming string to be null terminated? well we are reading only len, so it's fine ig
-    // processing request
-    printf("Request from client: size:%d: %.*s\n", len, len > 50 ? 50: len, request);
 
-    // echoing back req in response
-    msg("conn->outgoing before buf_append:%d", conn->outgoing.size());
-    buf_append(conn->outgoing, (const uint8_t*)&len, 4);
-    buf_append(conn->outgoing, request, len);
-    msg("conn->outgoing post buf_append:%d", conn->outgoing.size());
-
-    consume_buf(conn->incoming, len+4);
+    std::vector<std::string> cmd;
+    if(parse_req(data, end, cmd) < 0){
+        msg("try_one_request:Couldn't parse request. closing connection");
+        conn->flags |= WANT_CLOSE_FLAG;
+        return false;
+    }
+    Response resp;
+    do_request(cmd, resp);
+    make_response(resp, conn->outgoing);
+    consume_buf(conn->incoming, 4+req_len);
+    msg("conn->incoming.size() = ", conn->incoming.size());
     return true;
 }
+
+
 void handle_write(Conn* conn){
     msg("Handling write");
     assert(conn->outgoing.size() > 0);
@@ -183,9 +320,9 @@ void handle_read(Conn* conn){
     // one issue would be the too big msg.
     // is it like there can't be less than 4byte of header? ig so
     if (conn->outgoing.size()>0) {
-        //conn->flags &= ~WANT_READ_FLAG;
+        conn->flags &= ~WANT_READ_FLAG;
         conn->flags |= WANT_WRITE_FLAG;
-        // return handle_write(conn);
+        return handle_write(conn);
     }
 }
 
