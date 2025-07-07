@@ -15,6 +15,7 @@
 #include <vector>
 #include <poll.h>
 #include <unistd.h>
+#include "utils.h"
 
 
 #define PORT 8080
@@ -27,21 +28,6 @@
 
 // placeholder map<string, string> g_data
 std::map<std::string, std::string> g_data;
-
-static void die(const char* message){
-    perror(message);
-    std::abort();
-}
-void msg_errno(const char* msg){
-    fprintf(stderr, "[errno:%d] %s\n",errno, msg);
-}
-void msg(const char* msg, ...){
-    va_list args;
-    va_start(args, msg);
-    vfprintf(stderr, msg, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-}
 
 struct Conn{
     int fd;

@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <vector>
 #include <assert.h>
+#include "utils.h"
 
 #define K_MAX_BUF (32<<20)
 #define K_MAX_ARGS (200*1000)
