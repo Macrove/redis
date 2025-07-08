@@ -15,17 +15,6 @@
 #define K_MAX_ARGS (200*1000)
 #define PORT 8080
 
-void msg(const char* msg, ...){
-    va_list args;
-    va_start(args, msg);
-    vfprintf(stderr, msg, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-}
-void die(const char* msg){
-    fprintf(stderr, "%s\n", msg);
-    std::abort();
-}
 void buf_append(std::vector<uint8_t> &buf, uint8_t *data, ssize_t len){
     buf.insert(buf.end(), data, data+len);
 }

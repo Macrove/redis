@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <map>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <sys/poll.h>
@@ -16,6 +15,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include "utils.h"
+#include "hashtable.h"
 
 
 #define PORT 8080
@@ -25,9 +25,6 @@
 #define WANT_READ_FLAG POLLIN
 #define WANT_WRITE_FLAG POLLOUT
 #define WANT_CLOSE_FLAG POLLERR
-
-// placeholder map<string, string> g_data
-std::map<std::string, std::string> g_data;
 
 struct Conn{
     int fd;
@@ -154,43 +151,86 @@ static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<s
     return 0;
 }
 
+HMap* g_data = new HMap();
+struct Entry {
+    HNode node;
+    std::string key;
+    std::string val;
+};
+
+#define container_of(ptr, T, member)    \
+    ((T*)((char*)ptr - offsetof(T, member)))
+
+bool entry_eq(HNode* lhs, HNode* rhs){
+    Entry* e_lhs = container_of(lhs, Entry, node);
+    Entry* e_rhs = container_of(rhs, Entry, node);
+    return e_lhs->key == e_rhs->key;
+}
+
+// FNV hash
+static uint64_t str_hash(const uint8_t *data, size_t len) {
+    uint32_t h = 0x811C9DC5;
+    for (size_t i = 0; i < len; i++) {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
+}
+
+
+void do_get(HMap* hmap, std::vector<std::string> &cmd, Response &out){
+    Entry key;
+    swap(key.key, cmd[1]);
+    key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
+    HNode* node = hm_lookup(hmap, &key.node, &entry_eq);
+    if(!node){
+        msg("do_request:Get Key:%s, Not Found", key.key.c_str());
+        out.status = RES_NX; 
+        return;
+    }
+    const std::string &val = container_of(node, Entry, node)->val;
+    buf_append(out.data, (uint8_t*)val.size(), 4);
+    buf_append(out.data, (uint8_t*)val.data(), val.size());
+}
+
+void do_del(HMap* hmap, std::vector<std::string> &cmd, Response &out){
+    Entry key;
+    swap(key.key, cmd[1]);
+    key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
+    HNode* node = hm_lookup(hmap, &key.node, &entry_eq);
+    if(!node){
+        msg("do_request: %s not present. Skipping delete", cmd[1].c_str());
+        out.status = RES_NX;
+        return;
+    }
+    delete container_of(node, Entry, node);
+}
+
+void do_set(HMap* hmap, std::vector<std::string> &cmd, Response &out){
+    Entry key;
+    swap(key.key, cmd[1]);
+    key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
+    HNode* node = hm_lookup(hmap, &key.node, &entry_eq);
+    if(!node){
+        Entry *ent = new Entry();
+        ent->node.hcode = key.node.hcode;
+        swap(ent->val, cmd[2]);
+        swap(ent->key, key.key);
+        hm_insert(hmap, &ent->node);
+        return;
+    }
+    Entry *ent = container_of(node, Entry, node);
+    swap(ent->val, cmd[2]);
+}
+
 static void do_request(std::vector<std::string> &cmd, Response &out){
-    // check cmd.size and cmd[0]==get,set,del. for get and del - size if 2, for set it's 3
-    // in get req, if g_data.find(cmd[1])==g_data.end() return RES_NX as out.status
-    // else out.data should be it->second;
-    // in set - replace
-    // in del - erase
-    // if anything else - out.status = RES_ERR // for unrecognised command
     if (cmd.size() == 2 && cmd[0] == "get") {
-        auto it = g_data.find(cmd[1]);
-        if (it == g_data.end()) {
-            msg("do_request:Get Key:%s, Not Found", cmd[1].c_str());
-            out.status = RES_NX; 
-        } 
-        else{
-            const std::string &val = it->second;
-            uint32_t res_len = val.size();
-            buf_append(out.data, (uint8_t*)&res_len, 4);
-            buf_append(out.data, (uint8_t*)val.data(), (size_t)res_len);
-        }
+        do_get(g_data, cmd, out);
     }
     else if (cmd.size() == 2 && cmd[0] == "del") {
-        auto it = g_data.find(cmd[1]);
-        if (it==g_data.end()) {
-            msg("do_request: %s not present. Skipping delete", cmd[1].c_str());
-            out.status = RES_NX;
-        }
-        else
-            g_data.erase(it);
+        do_del(g_data, cmd, out);
     }
     else if(cmd.size() == 3 && cmd[0] == "set"){
-        auto it = g_data.find(cmd[1]);
-        if(it==g_data.end()){
-            g_data[cmd[1]] = cmd[2];
-        }
-        else{
-            std::swap(it->second, cmd[2]);
-        }
+        do_set(g_data, cmd, out);
     }
     else{
         msg("do_request:Invalid request");

@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-static void die(const char* message){
+void die(const char* message){
     perror(message);
     std::abort();
 }
