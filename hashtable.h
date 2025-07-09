@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -26,7 +27,7 @@ struct HMap {
 };
 
 void hm_insert(HMap* hmap, HNode* node);
-HNode* hm_delete(HMap* hmap, HNode* node, bool (*eq)(HNode*, HNode*));
 void hm_clear(HMap* hmap);
 size_t hm_size(HMap* hmap);
-HNode* hm_lookup(HMap* hmap, HNode* key, bool (*eq)(HNode*, HNode*));
+HNode* hm_lookup(HMap* hmap, HNode* key, std::function<bool(HNode*, HNode*)> eq);
+HNode* hm_delete(HMap* hmap, HNode* node, std::function<bool(HNode*, HNode*)> eq);

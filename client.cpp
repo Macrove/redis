@@ -34,11 +34,11 @@ int write_all(int fd, uint8_t* data, size_t len){
 }
 
 int read_full(int fd, uint8_t* buf, size_t len){
-    msg("read_full:reading response");
+    //msg("read_full:reading response");
     while(len>0){
-        msg("len:%d", len);
+        //msg("len:%d", len);
         ssize_t rv = read(fd, buf, len);
-        msg("rv:%d",rv);
+        //msg("rv:%d",rv);
         if(rv <= 0){
             msg("read failed");
             return -1;
@@ -76,10 +76,10 @@ int send_req(int fd, std::vector<std::string> &cmd){
         buf_append(wbuf, (uint8_t *)&size, 4);
         buf_append(wbuf, (uint8_t *)s.data(), size);
     }
-    for(int i=0;i<wbuf.size();i++){
-        std::cout << (int)wbuf[i] << " ";
-    }
-    std::cout << std::endl;
+    //for(int i=0;i<wbuf.size();i++){
+        //std::cout << (int)wbuf[i] << " ";
+    //}
+    //std::cout << std::endl;
     if(write_all(fd, wbuf.data(), wbuf.size()) < 0){
         msg("send_req:failed to write request");
         return -1;
@@ -156,7 +156,7 @@ int main(int argc, char* argv[]){
     std::vector<std::string> cmd;
     for(int i=1;i<argc;i++){
         cmd.push_back(argv[i]);
-        msg("cmd.back():%s", cmd.back().c_str());
+        //msg("cmd.back():%s", cmd.back().c_str());
     }
 
     int32_t err = send_req(fd, cmd);

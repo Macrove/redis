@@ -67,7 +67,7 @@ struct Conn* handle_accept(int fd){
         return NULL;
     }
     uint32_t ip = ntohl(client_addr.sin_addr.s_addr);
-    fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip>>24 & 255, ip>>16 & 255, ip>>8 & 255, ip & 255, ntohl(client_addr.sin_port));
+    //fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip>>24 & 255, ip>>16 & 255, ip>>8 & 255, ip & 255, ntohl(client_addr.sin_port));
 
     fd_set_nb(connfd);
 
@@ -90,7 +90,7 @@ static bool read_u32(const uint8_t *&cur, const uint8_t *end, uint32_t &out){
     // check if 4 bytes available
     // read 4 bytes
     if(cur + 4 > end){
-        msg("read_u32:insufficient data");
+        //msg("read_u32:insufficient data");
         return false;
     }
     memcpy(&out, cur, 4);
@@ -99,7 +99,7 @@ static bool read_u32(const uint8_t *&cur, const uint8_t *end, uint32_t &out){
 }
 static bool read_str(const uint8_t *&curr, const uint8_t *end, size_t n, std::string &out){
     if(curr + n > end){
-        msg("read_str: insufficient bytes");
+        //msg("read_str: insufficient bytes");
         return false;
     }
     out.assign(curr, curr + n);
@@ -130,7 +130,7 @@ static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<s
         msg("parse_req:can't read nstr");
         return -1;
     }
-    msg("nstr:%d", nstr);
+    //msg("nstr:%d", nstr);
     if(nstr > K_MAX_ARGS){
         msg("parse_req:Too big request");
         return -1;
@@ -141,12 +141,12 @@ static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<s
             msg("parse_req:couldn't read len of str");
             return -1;
         }
-        msg("len:%d",len);
+        //msg("len:%d",len);
         out.push_back("");
         if(!read_str(data, end, (size_t)len, out.back())){
             msg("parse_req:failed to read_str");
         }
-        msg("out.back():%s", out.back().c_str());
+        //msg("out.back():%s", out.back().c_str());
     }
     return 0;
 }
@@ -181,22 +181,23 @@ void do_get(HMap* hmap, std::vector<std::string> &cmd, Response &out){
     Entry key;
     swap(key.key, cmd[1]);
     key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
-    HNode* node = hm_lookup(hmap, &key.node, &entry_eq);
+    HNode* node = hm_lookup(hmap, &key.node, entry_eq);
     if(!node){
         msg("do_request:Get Key:%s, Not Found", key.key.c_str());
         out.status = RES_NX; 
         return;
     }
     const std::string &val = container_of(node, Entry, node)->val;
-    buf_append(out.data, (uint8_t*)val.size(), 4);
-    buf_append(out.data, (uint8_t*)val.data(), val.size());
+    uint32_t res_len = val.size();
+    buf_append(out.data, (uint8_t*)&res_len, 4);
+    buf_append(out.data, (uint8_t*)val.data(), res_len);
 }
 
 void do_del(HMap* hmap, std::vector<std::string> &cmd, Response &out){
     Entry key;
     swap(key.key, cmd[1]);
     key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
-    HNode* node = hm_lookup(hmap, &key.node, &entry_eq);
+    HNode* node = hm_delete(hmap, &key.node, entry_eq);
     if(!node){
         msg("do_request: %s not present. Skipping delete", cmd[1].c_str());
         out.status = RES_NX;
@@ -209,7 +210,7 @@ void do_set(HMap* hmap, std::vector<std::string> &cmd, Response &out){
     Entry key;
     swap(key.key, cmd[1]);
     key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
-    HNode* node = hm_lookup(hmap, &key.node, &entry_eq);
+    HNode* node = hm_lookup(hmap, &key.node, entry_eq);
     if(!node){
         Entry *ent = new Entry();
         ent->node.hcode = key.node.hcode;
@@ -244,19 +245,18 @@ static void make_response(const Response &resp, std::vector<uint8_t> &out){
     buf_append(out, (uint8_t *)&len, 4);
     buf_append(out, (uint8_t*)&resp.status, 4);
     buf_append(out, resp.data.data(), resp.data.size());
-    for(int i=0;i<out.size();i++){
-        std::cout << (int)out[i] << " ";
-    }
-    std::cout << '\n';
+    //for(int i=0;i<out.size();i++){
+        //std::cout << (int)out[i] << " ";
+    //}
+    //std::cout << '\n';
 }
 // optimization - response data goes directly to conn->outgoing
 // resp - status and data
 bool try_one_request(Conn* conn){
     if (conn->incoming.size()==0) {
-        msg("try_one_request:conn->incoming.size()==0");
+        //msg("try_one_request:conn->incoming.size()==0");
         return false; 
     }
-    std::cout << conn->incoming.size() << '\n';
     uint32_t req_len = 0;
     const uint8_t* data = conn->incoming.data();
     const uint8_t* end  = data + conn->incoming.size();
@@ -276,7 +276,7 @@ bool try_one_request(Conn* conn){
 
     std::vector<std::string> cmd;
     if(parse_req(data, end, cmd) < 0){
-        msg("try_one_request:Couldn't parse request. closing connection");
+        //msg("try_one_request:Couldn't parse request. closing connection");
         conn->flags |= WANT_CLOSE_FLAG;
         return false;
     }
@@ -284,13 +284,13 @@ bool try_one_request(Conn* conn){
     do_request(cmd, resp);
     make_response(resp, conn->outgoing);
     consume_buf(conn->incoming, 4+req_len);
-    msg("conn->incoming.size() = ", conn->incoming.size());
+    //msg("conn->incoming.size() = ", conn->incoming.size());
     return true;
 }
 
 
 void handle_write(Conn* conn){
-    msg("Handling write");
+    //msg("Handling write");
     assert(conn->outgoing.size() > 0);
     ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size());
     if (rv < 0 && errno == EAGAIN) {
@@ -302,9 +302,9 @@ void handle_write(Conn* conn){
         conn->flags |= WANT_CLOSE_FLAG;
         return;
     }
-    msg("Consuming write buf:size:%d, rv = %d", conn->outgoing.size(), rv);
+    //msg("Consuming write buf:size:%d, rv = %d", conn->outgoing.size(), rv);
     consume_buf(conn->outgoing, (size_t)rv);
-    msg("Consumed write buf:size:%d", conn->outgoing.size());
+    //msg("Consumed write buf:size:%d", conn->outgoing.size());
     if(conn->outgoing.size() == 0){
         conn->flags |= WANT_READ_FLAG;
         conn->flags &= ~WANT_WRITE_FLAG;
@@ -312,7 +312,7 @@ void handle_write(Conn* conn){
 }
 
 void handle_read(Conn* conn){
-    msg("Handling read");
+    //msg("Handling read");
     uint8_t buf[64*1024];
     errno = 0;
     ssize_t rv = read(conn->fd, buf, sizeof(buf));
@@ -327,7 +327,7 @@ void handle_read(Conn* conn){
     }
     if(rv == 0){
         if (conn->incoming.size()==0) {
-            msg("closing client");
+            //msg("closing client");
         }
         else{
             msg_errno("Unexpected EOF");
@@ -335,7 +335,7 @@ void handle_read(Conn* conn){
         conn->flags |= WANT_CLOSE_FLAG;
         return;
     }
-    msg("read bytes:%d", rv);
+    //msg("read bytes:%d", rv);
 
     // got some new data, put it in incoming 
     buf_append(conn->incoming, buf, (size_t)rv);
@@ -378,7 +378,7 @@ int main(){
     // set the listen fd to nonblocking mode
     fd_set_nb(fd);
 
-    std::cout << "fd_set_nb success" << std::endl;
+    //std::cout << "fd_set_nb success" << std::endl;
 
     // listen
     rv = listen(fd, SOMAXCONN); // SOMAXCONN - socket outstanding max conn
@@ -392,10 +392,10 @@ int main(){
 
     // event loop
     bool write_flag_set = false;
+    msg("Server ready");
     while (true) {
         rv = 0;
-        msg("Event loop");
-        msg("write_flag_set:%d", write_flag_set);
+        //msg("write_flag_set:%d", write_flag_set);
         poll_args.clear();
         poll_args.push_back({fd, POLLIN, 0});
 
@@ -410,12 +410,12 @@ int main(){
             //msg("pfd.revents:%d", pfd.revents);
             poll_args.push_back(pfd);
         }
-        msg("size of fd2conn:%d", fd2conn.size());
+        //msg("size of fd2conn:%d", fd2conn.size());
         // blocking call waiting for readiness
-        msg("poll waiting:%d", rv);
-        msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", 1, poll_args[1].events&WANT_READ_FLAG,poll_args[1].events&WANT_WRITE_FLAG,poll_args[1].events&WANT_CLOSE_FLAG ,poll_args[1].revents&WANT_READ_FLAG,poll_args[1].revents&WANT_WRITE_FLAG,poll_args[1].revents&WANT_CLOSE_FLAG);
+        //msg("poll waiting:%d", rv);
+        //msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", 1, poll_args[1].events&WANT_READ_FLAG,poll_args[1].events&WANT_WRITE_FLAG,poll_args[1].events&WANT_CLOSE_FLAG ,poll_args[1].revents&WANT_READ_FLAG,poll_args[1].revents&WANT_WRITE_FLAG,poll_args[1].revents&WANT_CLOSE_FLAG);
         rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
-        msg("poll success:%d", rv);
+        //msg("poll success:%d", rv);
         if (rv < 0 && (errno == EINTR || errno == EAGAIN)) { // interrupt sys call
             msg("Inturrupt poll call");
             continue;
@@ -441,7 +441,7 @@ int main(){
             if (ready & WANT_WRITE_FLAG) {
                 write_flag_set = true; 
             }
-            msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", i, poll_args[i].events&WANT_READ_FLAG,poll_args[i].events&WANT_WRITE_FLAG,poll_args[i].events&WANT_CLOSE_FLAG ,ready&WANT_READ_FLAG,ready&WANT_WRITE_FLAG,ready&WANT_CLOSE_FLAG);
+            //msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", i, poll_args[i].events&WANT_READ_FLAG,poll_args[i].events&WANT_WRITE_FLAG,poll_args[i].events&WANT_CLOSE_FLAG ,ready&WANT_READ_FLAG,ready&WANT_WRITE_FLAG,ready&WANT_CLOSE_FLAG);
             if(!ready){
                 continue;
             }
