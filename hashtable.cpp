@@ -118,3 +118,22 @@ void hm_clear(HMap* hmap){
 size_t hm_size(HMap* hmap){
     return hmap->newer.size + hmap->older.size;
 }
+
+void h_foreach(HTab* htab, std::function<bool(HNode*)> cb){
+    for(int pos = 0; pos < htab->mask; pos++){
+        HNode* curr = htab->tab[pos];
+        if(curr){
+            while(curr){
+                cb(curr);
+                curr = curr->next;
+            }
+        }
+    }
+}
+
+void hm_foreach(HMap* hmap, std::function<bool(HNode* node)> cb){
+    if(hmap->newer.tab)
+        h_foreach(&hmap->newer, cb);
+    if(hmap->older.tab)
+        h_foreach(&hmap->older, cb);
+}

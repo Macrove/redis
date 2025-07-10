@@ -4,9 +4,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <string>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -78,9 +80,18 @@ struct Conn* handle_accept(int fd){
     return conn;
 
 }
-
+void buf_append_u8(std::vector<uint8_t> &buf, const uint8_t data){
+    buf.push_back(data);
+}
 void buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len){
     buf.insert(buf.end(), data, data+len);
+}
+void buf_append_u32(std::vector<uint8_t> &buf, const uint32_t data){
+    buf_append(buf, (uint8_t*)&data, 4);
+}
+void buf_append_str(std::vector<uint8_t> &out, const std::string &msg){
+    buf_append_u32(out, msg.size());
+    buf_append(out, (uint8_t*)msg.data(), msg.size());
 }
 // optimization possibility - have a buffer struct, so that you just have to move the pointer instead of erase from start
 void consume_buf(std::vector<uint8_t>&buf, uint32_t len){
@@ -112,10 +123,6 @@ enum ResponseStatus {
     RES_ERR = 2,
 };
 
-struct Response{
-    enum ResponseStatus status = RES_OK;
-    std::vector<uint8_t> data;
-};
 static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<std::string> &out){
     // if can't read uint32, return -1
     // if len of req > k_max_buf - return -1
@@ -151,6 +158,15 @@ static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<s
     return 0;
 }
 
+enum {
+    TAG_NIL = 0,
+    TAG_ERR = 1,
+    TAG_STR = 2,
+    TAG_INT = 3,
+    TAG_DBL = 4,
+    TAG_ARR = 5
+};
+
 HMap* g_data = new HMap();
 struct Entry {
     HNode node;
@@ -176,41 +192,65 @@ static uint64_t str_hash(const uint8_t *data, size_t len) {
     return h;
 }
 
+enum ERR_CODES {
+    UNKNOWN_OPERATION = 0,
+    MSG_TOO_BIG = 1
+};
 
-void do_get(HMap* hmap, std::vector<std::string> &cmd, Response &out){
+void out_nil(std::vector<uint8_t> &out){
+    buf_append_u8(out, TAG_NIL);
+}
+void out_str(std::vector<uint8_t> &out, const std::string &str){
+    buf_append_u8(out, TAG_STR);
+    buf_append_str(out, str);
+}
+void out_int(std::vector<uint8_t> &out, uint32_t val){
+    buf_append_u8(out, TAG_INT);
+    buf_append_u32(out, val);
+}
+void out_err(std::vector<uint8_t> &out, ERR_CODES code, const std::string &msg){
+    buf_append_u8(out, TAG_ERR);
+    buf_append_u32(out, static_cast<uint32_t>(code));
+    buf_append_str(out, msg);
+}
+void out_arr(std::vector<uint8_t> &out, uint32_t arr_len){
+    buf_append_u8(out, TAG_ARR);
+    buf_append_u32(out, arr_len);
+}
+
+void do_get(HMap* hmap, std::vector<std::string> &cmd, std::vector<uint8_t> &out){
     Entry key;
     swap(key.key, cmd[1]);
     key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
     HNode* node = hm_lookup(hmap, &key.node, entry_eq);
     if(!node){
-        msg("do_request:Get Key:%s, Not Found", key.key.c_str());
-        out.status = RES_NX; 
+        //msg("do_request:Get Key:%s, Not Found", key.key.c_str());
+        out_nil(out);
         return;
     }
     const std::string &val = container_of(node, Entry, node)->val;
-    uint32_t res_len = val.size();
-    buf_append(out.data, (uint8_t*)&res_len, 4);
-    buf_append(out.data, (uint8_t*)val.data(), res_len);
+    out_str(out, val);
 }
 
-void do_del(HMap* hmap, std::vector<std::string> &cmd, Response &out){
+void do_del(HMap* hmap, std::vector<std::string> &cmd, std::vector<uint8_t> &out){
     Entry key;
     swap(key.key, cmd[1]);
     key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
     HNode* node = hm_delete(hmap, &key.node, entry_eq);
     if(!node){
-        msg("do_request: %s not present. Skipping delete", cmd[1].c_str());
-        out.status = RES_NX;
+        out_int(out, 0);
         return;
     }
     delete container_of(node, Entry, node);
+    out_int(out, 1);
 }
 
-void do_set(HMap* hmap, std::vector<std::string> &cmd, Response &out){
+void do_set(HMap* hmap, std::vector<std::string> &cmd, std::vector<uint8_t> &out){
     Entry key;
     swap(key.key, cmd[1]);
     key.node.hcode = str_hash((uint8_t*) key.key.data(), key.key.size());
     HNode* node = hm_lookup(hmap, &key.node, entry_eq);
+    out_nil(out);
     if(!node){
         Entry *ent = new Entry();
         ent->node.hcode = key.node.hcode;
@@ -223,7 +263,18 @@ void do_set(HMap* hmap, std::vector<std::string> &cmd, Response &out){
     swap(ent->val, cmd[2]);
 }
 
-static void do_request(std::vector<std::string> &cmd, Response &out){
+static bool cb_keys(HNode* node, std::vector<uint8_t> &out){
+    Entry* end = container_of(node, Entry, node);
+    out_str(out, end->val);
+    return true;
+}
+
+void do_keys(HMap* hmap, std::vector<uint8_t> &out){
+    out_arr(out, hm_size(hmap));
+    hm_foreach(hmap, std::bind(cb_keys, std::placeholders::_1, std::ref(out)));
+}
+
+static void do_request(std::vector<std::string> &cmd, std::vector<uint8_t> &out){
     if (cmd.size() == 2 && cmd[0] == "get") {
         do_get(g_data, cmd, out);
     }
@@ -233,22 +284,31 @@ static void do_request(std::vector<std::string> &cmd, Response &out){
     else if(cmd.size() == 3 && cmd[0] == "set"){
         do_set(g_data, cmd, out);
     }
+    else if(cmd.size() == 4 && cmd[0] == "keys"){
+        do_keys(g_data, out);
+    }
     else{
         msg("do_request:Invalid request");
-        out.status = RES_ERR;
+        out_err(out, UNKNOWN_OPERATION, cmd[0]);
     }
 }
-static void make_response(const Response &resp, std::vector<uint8_t> &out){
-    // fill out buffer with response
-    // format - len of response +4, resp_statuc, resp_data
-    uint32_t len = 4+resp.data.size();
-    buf_append(out, (uint8_t *)&len, 4);
-    buf_append(out, (uint8_t*)&resp.status, 4);
-    buf_append(out, resp.data.data(), resp.data.size());
-    //for(int i=0;i<out.size();i++){
-        //std::cout << (int)out[i] << " ";
-    //}
-    //std::cout << '\n';
+
+void response_begin(std::vector<uint8_t> &out, uint32_t &header_pos){
+    header_pos = out.size();
+    buf_append_u32(out, 0);
+}
+uint32_t response_size(const std::vector<uint8_t> &out, uint32_t header_pos){
+    return out.size() - header_pos - 4;
+}
+void response_end(std::vector<uint8_t> &out, uint32_t header_pos){
+    uint32_t res_size = response_size(out, header_pos);
+    if(res_size > K_MAX_BUF){
+        // keeps prev response + 4 bytes for header. rejects all after that
+        out.resize(header_pos + 4); 
+        out_err(out, MSG_TOO_BIG, std::to_string(res_size));
+        res_size = response_size(out, header_pos);
+    }
+    memcpy(&out[header_pos], (uint8_t*)&res_size, 4);
 }
 // optimization - response data goes directly to conn->outgoing
 // resp - status and data
@@ -280,9 +340,10 @@ bool try_one_request(Conn* conn){
         conn->flags |= WANT_CLOSE_FLAG;
         return false;
     }
-    Response resp;
-    do_request(cmd, resp);
-    make_response(resp, conn->outgoing);
+    uint32_t header_pos = 0;
+    response_begin(conn->outgoing, header_pos);
+    do_request(cmd, conn->outgoing);
+    response_end(conn->outgoing, header_pos);
     consume_buf(conn->incoming, 4+req_len);
     //msg("conn->incoming.size() = ", conn->incoming.size());
     return true;

@@ -31,3 +31,4 @@ void hm_clear(HMap* hmap);
 size_t hm_size(HMap* hmap);
 HNode* hm_lookup(HMap* hmap, HNode* key, std::function<bool(HNode*, HNode*)> eq);
 HNode* hm_delete(HMap* hmap, HNode* node, std::function<bool(HNode*, HNode*)> eq);
+void hm_foreach(HMap* hmap, std::function<bool(HNode* node)>);
