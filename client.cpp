@@ -11,9 +11,23 @@
 #include <assert.h>
 #include "utils.h"
 
-#define K_MAX_BUF (32<<20)
+#define K_MAX_BUF (4096)
 #define K_MAX_ARGS (200*1000)
 #define PORT 8080
+
+enum {
+    TAG_NIL = 0,
+    TAG_ERR = 1,
+    TAG_STR = 2,
+    TAG_INT = 3,
+    TAG_DBL = 4,
+    TAG_ARR = 5
+};
+
+enum ERR_CODES {
+    UNKNOWN_OPERATION = 0,
+    MSG_TOO_BIG = 1
+};
 
 void buf_append(std::vector<uint8_t> &buf, uint8_t *data, ssize_t len){
     buf.insert(buf.end(), data, data+len);
@@ -33,7 +47,7 @@ int write_all(int fd, uint8_t* data, size_t len){
     return 0;
 }
 
-int read_full(int fd, uint8_t* buf, size_t len){
+int read_full(int fd, char* buf, size_t len){
     //msg("read_full:reading response");
     while(len>0){
         //msg("len:%d", len);
@@ -49,6 +63,7 @@ int read_full(int fd, uint8_t* buf, size_t len){
     }
     return 0;
 }
+
 int send_req(int fd, std::vector<std::string> &cmd){
     // write_all to the fd. if there's an error, log and return 
     if (cmd.size() > K_MAX_ARGS) {
@@ -86,12 +101,105 @@ int send_req(int fd, std::vector<std::string> &cmd){
     }
     return 0;
 }
+
+int32_t print_response(char *res, size_t size){
+    if(size <= 0){
+        msg("print_res: size < 0");
+        return -1;
+    }
+    switch(res[0]){
+        case TAG_NIL:
+            msg("(nil)\n");
+            return 1;
+        case TAG_ERR:
+            if(1 + 8 < size){
+                msg("print_res: bad res in TAG_ERR. size: %d", size);
+                return -1;
+            }
+            {
+                uint32_t code, len;
+                memcpy(&code, &res[1], 4);
+                memcpy(&len, &res[1 + 4], 4);
+                if(size < 1 + 4 + 4 + len){
+                    msg("print_res: bad str res in TAG_ERR. size: %d", size);
+                    return -1;
+                }
+                printf("(err) %d %.*s\n", code, len, &res[1 + 8]);
+                return 1+8+len;
+            }
+        case TAG_INT:
+            if(size < 1 + 4){
+                msg("print_res: bad res in TAG_INT. size: %d", size);
+                return -1;
+            }
+            {
+                uint32_t val;
+                memcpy(&val, &res[1], 4);
+                msg("(int) %d\n", val);
+                return 1 + 4;
+
+            }
+        case TAG_DBL:
+            if(size < 1 + 8){
+                msg("print_res: bad res in TAG_DBL. size: %d", size);
+                return -1;
+            }
+            {
+                uint32_t val;
+                memcpy(&val, &res[1], 4);
+                msg("(dbl) %g\n", val);
+                return 1 + 4;
+            }
+        case TAG_STR:
+            if(size < 1 + 4){
+                msg("print_res: bad res in TAG_STR. size: %d", size);
+                return -1;
+            }
+            {
+                uint32_t len;
+                memcpy(&len, &res[1 + 4], 4);
+                printf("(str) %.*s\n", len, &res[1 + 4]);
+                return 1 + 4 + len;
+            }
+        case TAG_ARR:
+            if(size < 1 + 4){
+                msg("print_res: bad_res in TAG_ARR. size: %d", size);
+                return -1;
+            }
+            {
+                uint32_t arr_len;
+                memcpy(&arr_len, &res[1 + 4], 4);
+                uint32_t str_len;
+                uint32_t arr_bytes = 1 + 4;
+                printf("(arr) ");
+                for(int i=0;i<arr_len;i++){
+                    if(size < arr_bytes + 4){
+                        msg("print_res: bad_res in str_len TAG_ARR. size: %d arr_bytes: %d", size, arr_bytes);
+                        return -1;
+                    }
+                    memcpy(&str_len, &res[arr_bytes], 4);
+                    if(size < arr_bytes + 4 + str_len){
+                        msg("print_res: bad res in str TAG_ARR. size: %d, arr_bytes: %d, str_len: %d", size, arr_bytes, str_len);
+                        return -1;
+                    }
+                    printf(", %.*s", str_len, &res[arr_bytes + 4]);
+                    arr_bytes += 4 + str_len;
+                }
+                printf("\n");
+                return  arr_bytes;
+            }
+        default:
+            msg("print_res: bad_tag. tag: %c", res[0]);
+            return -1;
+    }
+}
 int read_res(int fd){
-    std::vector<uint8_t> res;
-    res.resize(4);
+    //std::vector<uint8_t> res;
+    char rbuf[4 + K_MAX_BUF];
     errno = 0;
     // read message body len
-    size_t rv = read_full(fd, res.data(), 4);
+    //size_t rv = read_full(fd, res.data(), 4);
+    size_t rv = read_full(fd, rbuf, 4);
     if(rv<0){
         if (errno == 0) {
             msg("EOF");
@@ -101,37 +209,26 @@ int read_res(int fd){
         }
         return rv;
     }
+
     size_t len = 0;
-    memcpy(&len, res.data(), 4);
+    memcpy(&len, rbuf, 4);
     if(len > K_MAX_BUF){
         msg("msg too long");
         return -1;
     }
-    if(len < 4){
-        msg("read_res:Insufficient bytes");
-        return -1;
-    }
-    res.clear();
-    res.resize(4);
     // read status
-    rv = read_full(fd, res.data(), 4);
+    rv = read_full(fd, rbuf, len);
     if(rv){
         msg("read() error");
         return rv;
     }
-    uint32_t status = 0;
-    memcpy(&status, res.data(), 4);
-    msg("Return response status:%d\n", (int)status);
-    if(len == 4) return 0;
-    res.clear();
-    res.resize(len - 4);
-    // read message if present
-    rv = read_full(fd,res.data(),len-4);
-    for(int i=0;i<res.size() && i<100;i++){
-        std::cout << (char)res[i];
+    rv = print_response(rbuf, len);
+    if(rv <= 0){
+        msg_errno("bad response");
+        return -1;
     }
-    std::cout << '\n';
-    return 0;
+    return rv;
+
 }
 
 int main(int argc, char* argv[]){
@@ -166,8 +263,8 @@ int main(int argc, char* argv[]){
         return 1;
     }
 
-    err = read_res(fd);
-    if (err) {
+    rv = read_res(fd);
+    if (rv < 0) {
         msg("main:read_res failed");
         close(fd);
         return 1;

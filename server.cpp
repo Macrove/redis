@@ -21,7 +21,7 @@
 
 
 #define PORT 8080
-#define K_MAX_BUF 32<<20
+#define K_MAX_BUF 4096
 #define K_MAX_ARGS 200*1000
 
 #define WANT_READ_FLAG POLLIN
@@ -499,13 +499,13 @@ int main(){
         // handle other connections
         for (int i=1; i<poll_args.size(); i++) {
             uint32_t ready = poll_args[i].revents;
+            if(!ready){
+                continue;
+            }
             if (ready & WANT_WRITE_FLAG) {
                 write_flag_set = true; 
             }
             //msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", i, poll_args[i].events&WANT_READ_FLAG,poll_args[i].events&WANT_WRITE_FLAG,poll_args[i].events&WANT_CLOSE_FLAG ,ready&WANT_READ_FLAG,ready&WANT_WRITE_FLAG,ready&WANT_CLOSE_FLAG);
-            if(!ready){
-                continue;
-            }
             Conn *conn = fd2conn[poll_args[i].fd];
             if (ready & POLLIN) {
                 assert(conn->flags & WANT_READ_FLAG);
