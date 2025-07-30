@@ -142,4 +142,5 @@ AVLNode* avl_del(AVLNode* node){
         return avl_zero_or_one_child_del(node);
     }
     return avl_two_children_del(node);
+
 }
