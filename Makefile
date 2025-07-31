@@ -1,4 +1,4 @@
-all: hashtable.o utils.o client server
+all: hashtable.o utils.o client server avl.o test_avl
 
 client: client.cpp utils.o
 	g++ -std=c++17 client.cpp utils.o -o client
@@ -11,6 +11,12 @@ hashtable.o: hashtable.cpp hashtable.h
 
 utils.o: utils.cpp utils.h
 	g++ -std=c++17 -c utils.cpp -o utils.o
+
+avl.o: avl.cpp avl.h
+	g++ -std=c++17 -c avl.cpp -o avl.o
+
+test_avl: test_avl.cpp avl.o
+	g++ -std=c++17 test_avl.cpp  avl.o -o test
 
 server: server.cpp hashtable.o utils.o
 	g++ -std=c++17 server.cpp hashtable.o utils.o -o server
