@@ -1,3 +1,4 @@
 client
 *.o
 server
+test
