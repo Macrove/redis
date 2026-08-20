@@ -12,7 +12,9 @@
 #include "utils.h"
 
 #define K_MAX_BUF (4096)
-#define K_MAX_ARGS (200*1000)
+// each arg costs >=4 bytes (its length prefix), so a K_MAX_BUF request can
+// never carry more args than this regardless of the value chosen here
+#define K_MAX_ARGS (K_MAX_BUF / 4)
 #define PORT 8080
 
 enum {
@@ -48,11 +50,8 @@ int write_all(int fd, uint8_t* data, size_t len){
 }
 
 int read_full(int fd, char* buf, size_t len){
-    //msg("read_full:reading response");
     while(len>0){
-        //msg("len:%d", len);
         ssize_t rv = read(fd, buf, len);
-        //msg("rv:%d",rv);
         if(rv <= 0){
             msg("read failed");
             return -1;
@@ -194,13 +193,11 @@ int32_t print_response(char *res, size_t size){
     }
 }
 int read_res(int fd){
-    //std::vector<uint8_t> res;
     char rbuf[4 + K_MAX_BUF];
     errno = 0;
     // read message body len
-    //size_t rv = read_full(fd, res.data(), 4);
-    size_t rv = read_full(fd, rbuf, 4);
-    if(rv<0){
+    int rv = read_full(fd, rbuf, 4);
+    if(rv < 0){
         if (errno == 0) {
             msg("EOF");
         }
@@ -218,7 +215,7 @@ int read_res(int fd){
     }
     // read status
     rv = read_full(fd, rbuf, len);
-    if(rv){
+    if(rv < 0){
         msg("read() error");
         return rv;
     }

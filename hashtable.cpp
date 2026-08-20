@@ -120,7 +120,7 @@ size_t hm_size(HMap* hmap){
 }
 
 void h_foreach(HTab* htab, std::function<bool(HNode*)> cb){
-    for(int pos = 0; pos < htab->mask; pos++){
+    for(size_t pos = 0; pos <= htab->mask; pos++){
         HNode* curr = htab->tab[pos];
         if(curr){
             while(curr){

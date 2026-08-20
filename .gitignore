@@ -1,4 +1,4 @@
 client
-*.o
 server
-test
+*.o
+*.dSYM/

@@ -22,7 +22,9 @@
 
 #define PORT 8080
 #define K_MAX_BUF 4096
-#define K_MAX_ARGS 200*1000
+// each arg costs >=4 bytes (its length prefix), so a K_MAX_BUF request can
+// never carry more args than this regardless of the value chosen here
+#define K_MAX_ARGS (K_MAX_BUF / 4)
 
 #define WANT_READ_FLAG POLLIN
 #define WANT_WRITE_FLAG POLLOUT
@@ -284,7 +286,7 @@ static void do_request(std::vector<std::string> &cmd, std::vector<uint8_t> &out)
     else if(cmd.size() == 3 && cmd[0] == "set"){
         do_set(g_data, cmd, out);
     }
-    else if(cmd.size() == 4 && cmd[0] == "keys"){
+    else if(cmd.size() == 1 && cmd[0] == "keys"){
         do_keys(g_data, out);
     }
     else{
@@ -497,7 +499,7 @@ int main(){
         }
 
         // handle other connections
-        for (int i=1; i<poll_args.size(); i++) {
+        for (size_t i=1; i<poll_args.size(); i++) {
             uint32_t ready = poll_args[i].revents;
             if(!ready){
                 continue;

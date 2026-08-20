@@ -1,26 +1,23 @@
-all: hashtable.o utils.o client server avl.o test_avl
+CXX = clang++
+CXXFLAGS = -std=c++17 -Wall -Wextra
+DEBUG_FLAGS = -g -O0
 
-client: client.cpp utils.o
-	g++ -std=c++17 client.cpp utils.o -o client
+all: server client
 
-#hashtable.a: hashtable.o
-#	ar rcs hashtable.a hashtable.o
-
-hashtable.o: hashtable.cpp hashtable.h
-	g++ -std=c++17 -c hashtable.cpp -o hashtable.o
+debug: CXXFLAGS += $(DEBUG_FLAGS)
+debug: all
 
 utils.o: utils.cpp utils.h
-	g++ -std=c++17 -c utils.cpp -o utils.o
+	$(CXX) $(CXXFLAGS) -c utils.cpp -o utils.o
 
-avl.o: avl.cpp avl.h
-	g++ -std=c++17 -c avl.cpp -o avl.o
-
-test_avl: test_avl.cpp avl.o
-	g++ -std=c++17 test_avl.cpp  avl.o -o test
+hashtable.o: hashtable.cpp hashtable.h
+	$(CXX) $(CXXFLAGS) -c hashtable.cpp -o hashtable.o
 
 server: server.cpp hashtable.o utils.o
-	g++ -std=c++17 server.cpp hashtable.o utils.o -o server
+	$(CXX) $(CXXFLAGS) server.cpp hashtable.o utils.o -o server
+
+client: client.cpp utils.o
+	$(CXX) $(CXXFLAGS) client.cpp utils.o -o client
 
 clean:
-	rm server client hashtable.o utils.o 
-
+	rm -f server client *.o
