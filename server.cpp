@@ -22,7 +22,9 @@
 
 #define PORT 8080
 #define K_MAX_BUF 4096
-#define K_MAX_ARGS 200*1000
+// each arg costs >=4 bytes (its length prefix), so a K_MAX_BUF request can
+// never carry more args than this regardless of the value chosen here
+#define K_MAX_ARGS (K_MAX_BUF / 4)
 
 struct Conn{
     int fd;
