@@ -15,6 +15,7 @@ void msg(const char* msg, ...){
     va_start(args, msg);
     vfprintf(stderr, msg, args);
     fprintf(stderr, "\n");
+    fflush(stderr);
     va_end(args);
 }
 

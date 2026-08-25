@@ -3,6 +3,7 @@
 #include <functional>
 #include "hashtable.h"
 #include "utils.h"
+#include<iostream>
 
 void h_init(HTab* htab, size_t n){
     assert(n > 0 && (n & n-1) == 0);
@@ -64,7 +65,7 @@ void hm_insert(HMap* hmap, HNode* node){
     h_insert(&hmap->newer, node);
 
     if(!hmap->older.tab){
-        int threshold = (hmap->newer.mask + 1) * K_MAX_LOAD_FACTOR;
+        size_t threshold = (hmap->newer.mask + 1) * K_MAX_LOAD_FACTOR;
         if(hmap->newer.size > threshold)
             hm_trigger_rehashing(hmap);
     }
@@ -120,7 +121,7 @@ size_t hm_size(HMap* hmap){
 }
 
 void h_foreach(HTab* htab, std::function<bool(HNode*)> cb){
-    for(int pos = 0; pos < htab->mask; pos++){
+    for(size_t pos = 0; pos <= htab->mask; pos++){
         HNode* curr = htab->tab[pos];
         if(curr){
             while(curr){

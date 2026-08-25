@@ -24,10 +24,6 @@
 #define K_MAX_BUF 4096
 #define K_MAX_ARGS 200*1000
 
-#define WANT_READ_FLAG POLLIN
-#define WANT_WRITE_FLAG POLLOUT
-#define WANT_CLOSE_FLAG POLLERR
-
 struct Conn{
     int fd;
     short flags;
@@ -44,7 +40,7 @@ static void fd_set_nb(int fd){
     if (errno) {
         die("fcntl:F_GETGL failed");
     }
-    flags |= O_NONBLOCK;
+    flags |= O_NONBLOCK;        //what is non blocking
 
     errno = 0;
     fcntl(fd, F_SETFL, flags);
@@ -59,7 +55,7 @@ struct Conn* handle_accept(int fd){
     socklen_t client_addr_len = sizeof(client_addr);
 
     errno = 0;
-    int connfd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_len);
+    int connfd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_len); // i don't have a understanding of what accept and socket func in client is actually doing
     //if (connfd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
         //msg("listening queue empty");
         //return NULL;
@@ -68,15 +64,16 @@ struct Conn* handle_accept(int fd){
         msg("Accept Failed");
         return NULL;
     }
-    uint32_t ip = ntohl(client_addr.sin_addr.s_addr);
+    //uint32_t ip = ntohl(client_addr.sin_addr.s_addr);  // network to host long, still don't understand what is the need of this/ what is going on
     //fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip>>24 & 255, ip>>16 & 255, ip>>8 & 255, ip & 255, ntohl(client_addr.sin_port));
 
     fd_set_nb(connfd);
 
     Conn *conn = new Conn();
     conn->fd = connfd;
-    conn->flags |= WANT_READ_FLAG;
+    conn->flags |= POLLIN;
 
+    //msg("New client connected. port:%d, addr:%d",client_addr.sin_port, client_addr.sin_addr);
     return conn;
 
 }
@@ -138,7 +135,8 @@ static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<s
         return -1;
     }
     //msg("nstr:%d", nstr);
-    if(nstr > K_MAX_ARGS){
+    if(nstr > K_MAX_ARGS){ // will this ever trigger, like who is taking more args than 3 anyway?
+        // also no one is checking whether the initial length reported is what is being read here
         msg("parse_req:Too big request");
         return -1;
     }
@@ -265,7 +263,7 @@ void do_set(HMap* hmap, std::vector<std::string> &cmd, std::vector<uint8_t> &out
 
 static bool cb_keys(HNode* node, std::vector<uint8_t> &out){
     Entry* end = container_of(node, Entry, node);
-    out_str(out, end->val);
+    buf_append_str(out, end->key);
     return true;
 }
 
@@ -284,7 +282,7 @@ static void do_request(std::vector<std::string> &cmd, std::vector<uint8_t> &out)
     else if(cmd.size() == 3 && cmd[0] == "set"){
         do_set(g_data, cmd, out);
     }
-    else if(cmd.size() == 4 && cmd[0] == "keys"){
+    else if(cmd.size() == 1 && cmd[0] == "keys"){
         do_keys(g_data, out);
     }
     else{
@@ -297,6 +295,9 @@ void response_begin(std::vector<uint8_t> &out, uint32_t &header_pos){
     header_pos = out.size();
     buf_append_u32(out, 0);
 }
+
+//tag, arrlen, str1len, str1, str2len, str2
+//1+4+4+2+4+2 = 17
 uint32_t response_size(const std::vector<uint8_t> &out, uint32_t header_pos){
     return out.size() - header_pos - 4;
 }
@@ -312,6 +313,10 @@ void response_end(std::vector<uint8_t> &out, uint32_t header_pos){
 }
 // optimization - response data goes directly to conn->outgoing
 // resp - status and data
+
+// trying to read output buf of client
+// input cmd = {"get", "10"}
+// output wbuf = <17,uint32> <3,uint32> <get,char[3]> <2, uint32> <10,char[3]>
 bool try_one_request(Conn* conn){
     if (conn->incoming.size()==0) {
         //msg("try_one_request:conn->incoming.size()==0");
@@ -324,9 +329,9 @@ bool try_one_request(Conn* conn){
         msg("try_one_request:couldn't read req_len");
         return false;
     }
-    if(req_len > K_MAX_BUF){
+    if(req_len > K_MAX_BUF){ // should be req_len > KMB+4
         msg("try_one_request: too big message. closing connection");
-        conn->flags |= WANT_CLOSE_FLAG;
+        conn->flags |= POLLERR;
         return false;
     }
     if(conn->incoming.size() < req_len+4){
@@ -337,7 +342,7 @@ bool try_one_request(Conn* conn){
     std::vector<std::string> cmd;
     if(parse_req(data, end, cmd) < 0){
         //msg("try_one_request:Couldn't parse request. closing connection");
-        conn->flags |= WANT_CLOSE_FLAG;
+        conn->flags |= POLLERR;
         return false;
     }
     uint32_t header_pos = 0;
@@ -360,15 +365,15 @@ void handle_write(Conn* conn){
     if (rv < 0) {
         // error in writing
         msg_errno("Write error");
-        conn->flags |= WANT_CLOSE_FLAG;
+        conn->flags |= POLLERR;
         return;
     }
     //msg("Consuming write buf:size:%d, rv = %d", conn->outgoing.size(), rv);
     consume_buf(conn->outgoing, (size_t)rv);
     //msg("Consumed write buf:size:%d", conn->outgoing.size());
     if(conn->outgoing.size() == 0){
-        conn->flags |= WANT_READ_FLAG;
-        conn->flags &= ~WANT_WRITE_FLAG;
+        conn->flags |= POLLIN;
+        conn->flags &= ~POLLOUT;
     }
 }
 
@@ -382,8 +387,8 @@ void handle_read(Conn* conn){
     }
     if(rv < 0){
         msg_errno("Read failed");
-        conn->flags &= ~WANT_READ_FLAG;
-        conn->flags |= WANT_CLOSE_FLAG;
+        conn->flags &= ~POLLIN;
+        conn->flags |= POLLERR;
         return;
     }
     if(rv == 0){
@@ -391,9 +396,9 @@ void handle_read(Conn* conn){
             //msg("closing client");
         }
         else{
-            msg_errno("Unexpected EOF");
+            msg_errno("Unexpected EOF"); // what if the message is fragmented and hasn't arrived yet
         }
-        conn->flags |= WANT_CLOSE_FLAG;
+        conn->flags |= POLLERR;
         return;
     }
     //msg("read bytes:%d", rv);
@@ -407,8 +412,8 @@ void handle_read(Conn* conn){
     // one issue would be the too big msg.
     // is it like there can't be less than 4byte of header? ig so
     if (conn->outgoing.size()>0) {
-        conn->flags &= ~WANT_READ_FLAG;
-        conn->flags |= WANT_WRITE_FLAG;
+        conn->flags &= ~POLLIN; // wrong ig
+        conn->flags |= POLLOUT;
         return handle_write(conn);
     }
 }
@@ -420,10 +425,9 @@ int main(){
         die("Socket failed");
     }
     int val = 1;
-    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val))){
+    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val))){  // why reuse addr?
         die("setsockopt Failed");
     };
-
     //bind
     struct sockaddr_in addr = {};
     socklen_t addrlen = sizeof(addr);
@@ -439,24 +443,21 @@ int main(){
     // set the listen fd to nonblocking mode
     fd_set_nb(fd);
 
-    //std::cout << "fd_set_nb success" << std::endl;
 
     // listen
     rv = listen(fd, SOMAXCONN); // SOMAXCONN - socket outstanding max conn
     if (rv) {
         die("listen failed");
     }
+    msg("Server ready. TCP Socket. Reusing address. bind addr:%d:%d. Non Blocking mode. Listening for max:%d connections", 0, PORT, SOMAXCONN);
 
     std::vector<Conn * > fd2conn;
     std::vector<struct pollfd> poll_args;
 
 
     // event loop
-    bool write_flag_set = false;
-    msg("Server ready");
     while (true) {
         rv = 0;
-        //msg("write_flag_set:%d", write_flag_set);
         poll_args.clear();
         poll_args.push_back({fd, POLLIN, 0});
 
@@ -471,10 +472,6 @@ int main(){
             //msg("pfd.revents:%d", pfd.revents);
             poll_args.push_back(pfd);
         }
-        //msg("size of fd2conn:%d", fd2conn.size());
-        // blocking call waiting for readiness
-        //msg("poll waiting:%d", rv);
-        //msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", 1, poll_args[1].events&WANT_READ_FLAG,poll_args[1].events&WANT_WRITE_FLAG,poll_args[1].events&WANT_CLOSE_FLAG ,poll_args[1].revents&WANT_READ_FLAG,poll_args[1].revents&WANT_WRITE_FLAG,poll_args[1].revents&WANT_CLOSE_FLAG);
         rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
         //msg("poll success:%d", rv);
         if (rv < 0 && (errno == EINTR || errno == EAGAIN)) { // interrupt sys call
@@ -486,7 +483,7 @@ int main(){
         }
         // handle listening socket
         if(poll_args[0].revents){
-            Conn *conn = handle_accept(fd);
+            Conn *conn = handle_accept(fd); // instead of on heap, it'd better to do this on stack, since i know max conn attempts?
             if(conn){
                 if (size_t(conn->fd) >= fd2conn.size()) {
                     fd2conn.resize(conn->fd + 1);
@@ -497,27 +494,24 @@ int main(){
         }
 
         // handle other connections
-        for (int i=1; i<poll_args.size(); i++) {
+        for (size_t i=1; i<poll_args.size(); i++) {
             uint32_t ready = poll_args[i].revents;
             if(!ready){
                 continue;
             }
-            if (ready & WANT_WRITE_FLAG) {
-                write_flag_set = true; 
-            }
-            //msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", i, poll_args[i].events&WANT_READ_FLAG,poll_args[i].events&WANT_WRITE_FLAG,poll_args[i].events&WANT_CLOSE_FLAG ,ready&WANT_READ_FLAG,ready&WANT_WRITE_FLAG,ready&WANT_CLOSE_FLAG);
+            //msg("poll_args_i: %d, read_e:%d, write_e:%d, close_e:%d,read_r:%d, write_r:%d, close_r:%d", i, poll_args[i].events&POLLIN,poll_args[i].events&POLLOUT,poll_args[i].events&POLLERR ,ready&POLLIN,ready&POLLOUT,ready&POLLERR);
             Conn *conn = fd2conn[poll_args[i].fd];
             if (ready & POLLIN) {
-                assert(conn->flags & WANT_READ_FLAG);
+                assert(conn->flags & POLLIN);
                 handle_read(conn);
             }
             if(ready & POLLOUT){
-                assert(conn->flags & WANT_WRITE_FLAG);
+                assert(conn->flags & POLLOUT);
                 handle_write(conn);
             }
-            if((ready & POLLERR) || (conn->flags & WANT_CLOSE_FLAG)){
+            if((ready & POLLERR) || (conn->flags & POLLERR)){
                 close(conn->fd);
-                fd2conn[conn->fd] = NULL;
+                fd2conn[conn->fd] = nullptr;
                 delete conn;
             }
         }

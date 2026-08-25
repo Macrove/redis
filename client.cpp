@@ -33,21 +33,21 @@ void buf_append(std::vector<uint8_t> &buf, uint8_t *data, ssize_t len){
     buf.insert(buf.end(), data, data+len);
 }
 
-int write_all(int fd, uint8_t* data, size_t len){
+int write_all(int fd, uint8_t* data, uint32_t len){
     while(len>0){
         ssize_t rv = write(fd, data, len);
         if(rv<=0){
             msg("Write Failed");
             return -1;
         }
-        assert(rv <= len);
-        len-=(size_t)rv;
+        assert((uint32_t)rv <= len);
+        len-=(uint32_t)rv;
         data+=rv;
     }
     return 0;
 }
 
-int read_full(int fd, char* buf, size_t len){
+int read_full(int fd, char* buf, uint32_t len){
     //msg("read_full:reading response");
     while(len>0){
         //msg("len:%d", len);
@@ -57,16 +57,19 @@ int read_full(int fd, char* buf, size_t len){
             msg("read failed");
             return -1;
         }
-        assert(rv<=len);
-        len-=(size_t)rv;
+        assert((uint32_t)rv<=len);
+        len-=(uint32_t)rv;
         buf+=rv;
     }
     return 0;
 }
 
+// message structure
+// input cmd = {"get", "10"}
+// output wbuf = <17,uint32> <2,uint32> <3,uint32> <get,char[3]> <2, uint32> <10,char[3]>
 int send_req(int fd, std::vector<std::string> &cmd){
     // write_all to the fd. if there's an error, log and return 
-    if (cmd.size() > K_MAX_ARGS) {
+    if (cmd.size() > K_MAX_ARGS) { // will this ever trigger?
         msg("send_req:Too many args");
         return -1;
     }
@@ -78,10 +81,6 @@ int send_req(int fd, std::vector<std::string> &cmd){
         msg("send_req:Too big message");
         return -1;
     }
-    if(cmd.size() > K_MAX_ARGS){
-        msg("send_req:Too many args");
-        return -1;
-    }
     std::vector<uint8_t> wbuf;
     buf_append(wbuf, (uint8_t*)&len, 4);
     uint32_t nstr = cmd.size();
@@ -91,10 +90,6 @@ int send_req(int fd, std::vector<std::string> &cmd){
         buf_append(wbuf, (uint8_t *)&size, 4);
         buf_append(wbuf, (uint8_t *)s.data(), size);
     }
-    //for(int i=0;i<wbuf.size();i++){
-        //std::cout << (int)wbuf[i] << " ";
-    //}
-    //std::cout << std::endl;
     if(write_all(fd, wbuf.data(), wbuf.size()) < 0){
         msg("send_req:failed to write request");
         return -1;
@@ -102,11 +97,27 @@ int send_req(int fd, std::vector<std::string> &cmd){
     return 0;
 }
 
-int32_t print_response(char *res, size_t size){
+bool read_u32(char*& start, const char* end, uint32_t& val){
+    if(start + 4 > end) return false;
+    memcpy(&val, start, 4);
+    start+=4;
+    return true;
+}
+
+bool read_str(char*& start, const char* end, char* buf, uint32_t len){
+    if(start + len > end) return false;
+    memcpy(buf, start, len);
+    start+=len;
+    return true;
+}
+
+int32_t print_response(char *res, uint32_t size){
     if(size <= 0){
         msg("print_res: size < 0");
         return -1;
     }
+    char* curr = res+1;
+    const char* end = res + size;
     switch(res[0]){
         case TAG_NIL:
             msg("(nil)\n");
@@ -118,13 +129,13 @@ int32_t print_response(char *res, size_t size){
             }
             {
                 uint32_t code, len;
-                memcpy(&code, &res[1], 4);
-                memcpy(&len, &res[1 + 4], 4);
-                if(size < 1 + 4 + 4 + len){
+                read_u32(curr, end, code);
+                read_u32(curr, end, len);
+                if(size < 1 + 4 + 4 + len){ // something is wrong here
                     msg("print_res: bad str res in TAG_ERR. size: %d", size);
                     return -1;
                 }
-                printf("(err) %d %.*s\n", code, len, &res[1 + 8]);
+                printf("(err) %d %.*s\n", code, len, curr);
                 return 1+8+len;
             }
         case TAG_INT:
@@ -134,7 +145,7 @@ int32_t print_response(char *res, size_t size){
             }
             {
                 uint32_t val;
-                memcpy(&val, &res[1], 4);
+                read_u32(curr, end, val);
                 msg("(int) %d\n", val);
                 return 1 + 4;
 
@@ -146,7 +157,7 @@ int32_t print_response(char *res, size_t size){
             }
             {
                 uint32_t val;
-                memcpy(&val, &res[1], 4);
+                read_u32(curr, end, val);
                 msg("(dbl) %g\n", val);
                 return 1 + 4;
             }
@@ -157,8 +168,8 @@ int32_t print_response(char *res, size_t size){
             }
             {
                 uint32_t len;
-                memcpy(&len, &res[1 + 4], 4);
-                printf("(str) %.*s\n", len, &res[1 + 4]);
+                read_u32(curr, end, len);
+                printf("(str) %.*s\n", len, curr);
                 return 1 + 4 + len;
             }
         case TAG_ARR:
@@ -167,26 +178,30 @@ int32_t print_response(char *res, size_t size){
                 return -1;
             }
             {
-                uint32_t arr_len;
-                memcpy(&arr_len, &res[1 + 4], 4);
-                uint32_t str_len;
-                uint32_t arr_bytes = 1 + 4;
-                printf("(arr) ");
-                for(int i=0;i<arr_len;i++){
-                    if(size < arr_bytes + 4){
-                        msg("print_res: bad_res in str_len TAG_ARR. size: %d arr_bytes: %d", size, arr_bytes);
-                        return -1;
-                    }
-                    memcpy(&str_len, &res[arr_bytes], 4);
-                    if(size < arr_bytes + 4 + str_len){
-                        msg("print_res: bad res in str TAG_ARR. size: %d, arr_bytes: %d, str_len: %d", size, arr_bytes, str_len);
-                        return -1;
-                    }
-                    printf(", %.*s", str_len, &res[arr_bytes + 4]);
-                    arr_bytes += 4 + str_len;
+                char buf[K_MAX_BUF];
+                uint32_t arr_len = 0;
+                if(!read_u32(curr, end, arr_len)){
+                    msg("print_res: couldn't read arr_len. size:%d", size);
+                    return -1;
                 }
-                printf("\n");
-                return  arr_bytes;
+                if(arr_len == 0){
+                    msg("no keys");
+                    return 1 + 4;
+                }
+                for(uint32_t i=0;i<arr_len;++i){
+                    uint32_t str_len = 0;
+                    if(!read_u32(curr, end, str_len)){
+                        msg("print_res:couldn't read size of %d string. %d", i, size);
+                        return -1;
+                    }
+                    if(!read_str(curr, end, buf, str_len)){
+                        msg("print_res:bad string data. str_len:%d. size:%d",str_len, size);
+                        return -1;
+                    }
+
+                    printf("(str) %.*s\n", (int)str_len, buf);
+                }
+                return curr - res;
             }
         default:
             msg("print_res: bad_tag. tag: %c", res[0]);
@@ -198,8 +213,8 @@ int read_res(int fd){
     char rbuf[4 + K_MAX_BUF];
     errno = 0;
     // read message body len
-    //size_t rv = read_full(fd, res.data(), 4);
-    size_t rv = read_full(fd, rbuf, 4);
+    //uint32_t rv = read_full(fd, res.data(), 4);
+    uint32_t rv = read_full(fd, rbuf, 4);
     if(rv<0){
         if (errno == 0) {
             msg("EOF");
@@ -210,13 +225,14 @@ int read_res(int fd){
         return rv;
     }
 
-    size_t len = 0;
+    uint32_t len = 0;
     memcpy(&len, rbuf, 4);
     if(len > K_MAX_BUF){
         msg("msg too long");
         return -1;
     }
     // read status
+    // should read len - 4 bytes right?
     rv = read_full(fd, rbuf, len);
     if(rv){
         msg("read() error");
@@ -228,22 +244,21 @@ int read_res(int fd){
         return -1;
     }
     return rv;
-
 }
 
 int main(int argc, char* argv[]){
-    if(argc<3){
+    if(argc<2){
         msg("Invalid args");
         return 1;
     }
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = socket(AF_INET, SOCK_STREAM, 0); // tcp vs udp, local host vs afinit
     if(fd<0){
         die("socket failed");
     }
     struct sockaddr_in server_addr={};
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_port = htons(PORT);   //htons = host to network short??, what ports are allowed
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    server_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // what does inaddr_loopback means, and what is htonl here? host to network long?
     socklen_t addrlen = sizeof(server_addr);
 
     int rv = connect(fd, (const struct sockaddr *)&server_addr, addrlen);
