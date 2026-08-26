@@ -1,6 +1,6 @@
-# redis2
+# redis
 
-A tiny Redis-like server/client built from scratch in C++, mostly to learn
+A tiny server/client interface built from scratch in C++, mostly to learn
 non-blocking socket IO and a couple of core data structures along the way.
 
 ## What's here
