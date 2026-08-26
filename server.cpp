@@ -42,7 +42,7 @@ static void fd_set_nb(int fd){
     if (errno) {
         die("fcntl:F_GETGL failed");
     }
-    flags |= O_NONBLOCK;        //what is non blocking
+    flags |= O_NONBLOCK;
 
     errno = 0;
     fcntl(fd, F_SETFL, flags);
@@ -57,16 +57,12 @@ struct Conn* handle_accept(int fd){
     socklen_t client_addr_len = sizeof(client_addr);
 
     errno = 0;
-    int connfd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_len); // i don't have a understanding of what accept and socket func in client is actually doing
-    //if (connfd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        //msg("listening queue empty");
-        //return NULL;
-    //}
+    int connfd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_len);
     if (connfd < 0) {
         msg("Accept Failed");
         return NULL;
     }
-    //uint32_t ip = ntohl(client_addr.sin_addr.s_addr);  // network to host long, still don't understand what is the need of this/ what is going on
+    //uint32_t ip = ntohl(client_addr.sin_addr.s_addr);
     //fprintf(stderr, "new client from %u.%u.%u.%u:%u\n", ip>>24 & 255, ip>>16 & 255, ip>>8 & 255, ip & 255, ntohl(client_addr.sin_port));
 
     fd_set_nb(connfd);
@@ -137,8 +133,7 @@ static int32_t parse_req(const uint8_t *&data, const uint8_t* end, std::vector<s
         return -1;
     }
     //msg("nstr:%d", nstr);
-    if(nstr > K_MAX_ARGS){ // will this ever trigger, like who is taking more args than 3 anyway?
-        // also no one is checking whether the initial length reported is what is being read here
+    if(nstr > K_MAX_ARGS){
         msg("parse_req:Too big request");
         return -1;
     }
@@ -298,8 +293,6 @@ void response_begin(std::vector<uint8_t> &out, uint32_t &header_pos){
     buf_append_u32(out, 0);
 }
 
-//tag, arrlen, str1len, str1, str2len, str2
-//1+4+4+2+4+2 = 17
 uint32_t response_size(const std::vector<uint8_t> &out, uint32_t header_pos){
     return out.size() - header_pos - 4;
 }
@@ -316,9 +309,6 @@ void response_end(std::vector<uint8_t> &out, uint32_t header_pos){
 // optimization - response data goes directly to conn->outgoing
 // resp - status and data
 
-// trying to read output buf of client
-// input cmd = {"get", "10"}
-// output wbuf = <17,uint32> <3,uint32> <get,char[3]> <2, uint32> <10,char[3]>
 bool try_one_request(Conn* conn){
     if (conn->incoming.size()==0) {
         //msg("try_one_request:conn->incoming.size()==0");
@@ -331,7 +321,7 @@ bool try_one_request(Conn* conn){
         msg("try_one_request:couldn't read req_len");
         return false;
     }
-    if(req_len > K_MAX_BUF){ // should be req_len > KMB+4
+    if(req_len > K_MAX_BUF){
         msg("try_one_request: too big message. closing connection");
         conn->flags |= POLLERR;
         return false;
@@ -410,11 +400,8 @@ void handle_read(Conn* conn){
 
     while(try_one_request(conn)){};
 
-    // why not conn->income.size>0 => want read more, since there is an incomplete request in the queue
-    // one issue would be the too big msg.
-    // is it like there can't be less than 4byte of header? ig so
     if (conn->outgoing.size()>0) {
-        conn->flags &= ~POLLIN; // wrong ig
+        conn->flags &= ~POLLIN;
         conn->flags |= POLLOUT;
         return handle_write(conn);
     }
@@ -427,7 +414,7 @@ int main(){
         die("Socket failed");
     }
     int val = 1;
-    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val))){  // why reuse addr?
+    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val))){
         die("setsockopt Failed");
     };
     //bind

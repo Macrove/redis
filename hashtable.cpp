@@ -3,7 +3,6 @@
 #include <functional>
 #include "hashtable.h"
 #include "utils.h"
-#include<iostream>
 
 void h_init(HTab* htab, size_t n){
     assert(n > 0 && (n & n-1) == 0);

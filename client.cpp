@@ -68,7 +68,7 @@ int read_full(int fd, char* buf, size_t len){
 // output wbuf = <17,uint32> <2,uint32> <3,uint32> <get,char[3]> <2, uint32> <10,char[3]>
 int send_req(int fd, std::vector<std::string> &cmd){
     // write_all to the fd. if there's an error, log and return 
-    if (cmd.size() > K_MAX_ARGS) { // will this ever trigger?
+    if (cmd.size() > K_MAX_ARGS) {
         msg("send_req:Too many args");
         return -1;
     }
@@ -229,7 +229,6 @@ int read_res(int fd){
         return -1;
     }
     // read status
-    // should read len - 4 bytes right?
     rv = read_full(fd, rbuf, len);
     if(rv < 0){
         msg("read() error");
@@ -248,14 +247,14 @@ int main(int argc, char* argv[]){
         msg("Invalid args");
         return 1;
     }
-    int fd = socket(AF_INET, SOCK_STREAM, 0); // tcp vs udp, local host vs afinit
+    int fd = socket(AF_INET, SOCK_STREAM, 0); 
     if(fd<0){
         die("socket failed");
     }
     struct sockaddr_in server_addr={};
-    server_addr.sin_port = htons(PORT);   //htons = host to network short??, what ports are allowed
+    server_addr.sin_port = htons(PORT);
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // what does inaddr_loopback means, and what is htonl here? host to network long?
+    server_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     socklen_t addrlen = sizeof(server_addr);
 
     int rv = connect(fd, (const struct sockaddr *)&server_addr, addrlen);
